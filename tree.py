@@ -120,14 +120,16 @@ class Tree:
 
         return res
 
-    def to_dict(self, attr_name='text'):
+    @property
+    def tree_dict(self):
+        attr_name = 'text'
 
         def _to_dict(root: Node, t_dict: dict):
             if not root.children:
                 return
 
             for child in root.children:
-                value = getattr(child, attr_name)
+                value = getattr(child, attr_name, '')
                 if value not in t_dict:
                     t_dict[value] = {}
                     _to_dict(child, t_dict[value])
@@ -137,7 +139,7 @@ class Tree:
         res = dict()
         _to_dict(self.root, res)
 
-        return res
+        return {getattr(self.root, attr_name): res}
 
     @tree_verify
     def update(self, node, **kwargs):
@@ -178,7 +180,7 @@ def test():
     # node = tree.find_parent_node(node=nodes[1])
     tree.update(nodes[12], value=15)
     res = [obj.value for obj in tree.level_order()]
-    print(tree.to_dict())
+    print(tree.tree_dict)
     # print(res)
     # print(tree.get_level(nodes[0], insert_node))
 

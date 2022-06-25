@@ -34,7 +34,7 @@ __KEYS__ = [
     'doctop',  # 字符顶部到文档顶部的距离。
 ]
 
-log = get_logger()
+log = get_logger(__name__)
 
 
 class TextClassifier(object):
@@ -45,6 +45,7 @@ class TextClassifier(object):
         self.tree = Tree(Node())
         self.pre_node = None
         self.last_count = -1
+        self.level_set = set()
 
     @staticmethod
     def iter_successive_text(chars: List[Dict]) -> str:
@@ -85,34 +86,71 @@ class TextClassifier(object):
 
         self.pre_node = self.tree.root
 
-    def level_correct(self, count, **kwargs):
+    def merge(self, count, **kwargs):
+        """
+        合并层级
+        :param count:
+        :param kwargs:
+        :return:
+        """
+        if count == self.last_count + 1:
+            kwargs['text'] = ''.join([getattr(self.pre_node, 'text'), kwargs['text']])
+            self.tree.update(self.pre_node, **kwargs)
+        else:
+            _, pre_parent_node = self.tree.find_parent_node(self.pre_node)
+            node = Node(**kwargs)
+            self.tree.insert(pre_parent_node, node)
+            self.pre_node = node
+
+    def insert(self, **kwargs):
+        pre_level, cur_level = getattr(self.pre_node, 'level'), kwargs['level']
+        # 先找，找不到再插入
+
+        if cur_level not in self.level_set:
+            for i in range(cur_level - pre_level - 1):
+                node = Node()
+                setattr(node, 'level', pre_level + i)
+                self.tree.insert(self.pre_node, node)
+                self.pre_node = node
+        else:
+            children = self.pre_node.children
+            for i in range(cur_level - pre_level - 1):
+                if children:
+                    self.pre_node = children[-1]
+                    children = children[-1].children
+
+        node = Node(**kwargs)
+        self.tree.insert(self.pre_node, node)
+        self.pre_node = node
+
+    def upper_adjust(self, **kwargs):
+        pre_level, cur_level = getattr(self.pre_node, 'level'), kwargs['level']
+
+        for i in range(pre_level - cur_level - 1):
+            _, p_node = self.tree.find_parent_node(self.pre_node)
+            if not getattr(p_node, 'text', ''):
+                self.tree.update(p_node, **kwargs)
+                self.pre_node = p_node
+                return
+
+            self.pre_node = p_node
+
+        _, p_node = self.tree.find_parent_node(self.pre_node)
+        node = Node(**kwargs)
+        self.tree.insert(p_node, node)
+        self.pre_node = node
+
+    def adjust_level(self, count, **kwargs):
         pre_size, size = getattr(self.pre_node, 'size'), kwargs['size']
 
         if pre_size == size:
-            if count == self.last_count + 1:
-                kwargs['text'] = ''.join([getattr(self.pre_node, 'text'), kwargs['text']])
-                self.tree.update(self.pre_node, **kwargs)
-            else:
-                _, pre_parent_node = self.tree.find_parent_node(self.pre_node)
-                node = Node(**kwargs)
-                self.tree.insert(pre_parent_node, node)
-                self.pre_node = node
+            self.merge(count, **kwargs)
 
         elif pre_size > size:
-            node = Node(**kwargs)
-            self.tree.insert(self.pre_node, node)
-            self.pre_node = node
+            self.insert(**kwargs)
 
         else:
-            _, pre_parent_node = self.tree.find_parent_node(self.pre_node)
-            if not getattr(pre_parent_node, 'text', ''):
-                self.tree.update(pre_parent_node, **kwargs)
-                self.pre_node = pre_parent_node
-            else:
-                node = Node(**kwargs)
-                _, pre_2_parent_node = self.tree.find_parent_node(pre_parent_node)
-                self.tree.insert(pre_2_parent_node, node)
-                self.pre_node = node
+            self.upper_adjust(**kwargs)
 
     def set_pri_title(self, count, **kwargs):
         if not self.pre_node:
@@ -120,7 +158,7 @@ class TextClassifier(object):
             self.tree.insert(self.tree.root, node)
             self.pre_node = node
         else:
-            self.level_correct(count, **kwargs)
+            self.adjust_level(count, **kwargs)
 
     def set_sec_title(self, count, **kwargs):
         if not self.pre_node:
@@ -129,7 +167,7 @@ class TextClassifier(object):
             self.tree.insert(pri_node, sec_node)
             self.pre_node = sec_node
         else:
-            self.level_correct(count, **kwargs)
+            self.adjust_level(count, **kwargs)
 
     def set_third_level_title(self, count, **kwargs):
         if not self.pre_node:
@@ -139,7 +177,7 @@ class TextClassifier(object):
             self.tree.insert(sec_node, thd_node)
             self.pre_node = thd_node
         else:
-            self.level_correct(count, **kwargs)
+            self.adjust_level(count, **kwargs)
 
     def handle_text(self, count: int, chars: List[Dict]):
         size = int(round(chars[0]['size']))
@@ -155,20 +193,25 @@ class TextClassifier(object):
             return
 
         if size >= Title.size:
+            params['level'] = Title.level
             self.set_title(count, **params)
-            self.last_count = count
 
         elif size == PrimaryTitle.size:
+            params['level'] = PrimaryTitle.level
             self.set_pri_title(count, **params)
-            self.last_count = count
 
         elif size == SecondaryTitle.size:
+            params['level'] = SecondaryTitle.level
             self.set_sec_title(count, **params)
-            self.last_count = count
 
         elif size == ThirdLevelTitle.size:
+            params['level'] = ThirdLevelTitle.level
             self.set_third_level_title(count, **params)
-            self.last_count = count
+        else:
+            return
+
+        self.level_set.add(params['level'])
+        self.last_count = count
 
     def classify(self):
         """
@@ -179,11 +222,14 @@ class TextClassifier(object):
         try:
             for page in self.pdf.pages:
                 for count, attr_list in enumerate(self.iter_successive_text(page.chars)):
-                    self.handle_text(count, attr_list)
+
                     size = attr_list[0]['size']
                     bottom = attr_list[0]['bottom']
                     if size >= ThirdLevelTitle.size and bottom > 55:
                         print(str(int(round(size))) + ' - ' + ''.join([i['text'] for i in attr_list]))
+
+                    self.handle_text(count, attr_list)
+
         except Exception as e:
             log.error(traceback.format_exc())
         finally:
@@ -197,8 +243,8 @@ def test():
     # file_name = '第10期 百毒不侵的电脑是怎样练成的.pdf'
     obj = TextClassifier(ARTICLE_PATH + '/' + file_name)
     obj.classify()
-    # print(obj.tree.pre_order())
-    print(obj.tree.to_dict())
+    print([getattr(item, 'text', '') for item in obj.tree.level_order()])
+    print(obj.tree.tree_dict)
 
 
 if __name__ == '__main__':
