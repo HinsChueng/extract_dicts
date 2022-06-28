@@ -167,7 +167,7 @@
       <workItem from="1656034548374" duration="421000" />
       <workItem from="1656034978600" duration="24000" />
       <workItem from="1656035009562" duration="31758000" />
-      <workItem from="1656125158277" duration="46976000" />
+      <workItem from="1656125158277" duration="47392000" />
     </task>
     <servers />
   </component>
@@ -207,11 +207,6 @@
           <url>file://$PROJECT_DIR$/filter_images.py</url>
           <line>477</line>
           <option name="timeStamp" value="90" />
-        </line-breakpoint>
-        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
-          <url>file://$PROJECT_DIR$/test.py</url>
-          <line>36</line>
-          <option name="timeStamp" value="93" />
         </line-breakpoint>
       </breakpoints>
       <default-breakpoints>
