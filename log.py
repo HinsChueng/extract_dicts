@@ -1,15 +1,22 @@
 import logging
+import os.path
+
+from config import LOG_PATH
 
 
 def get_logger(name):
-    logger = logging.getLogger(name)
+    if not os.path.exists(LOG_PATH):
+        os.makedirs(LOG_PATH)
+
+    log_name = '/'.join([LOG_PATH, name + '.log'])
+
+    logger = logging.getLogger(log_name)
     logger.setLevel(logging.INFO)
 
-    # 判断logger是否已经添加过handler，是则直接返回logger对象，否则执行handler设定以及addHandler(console_handle)
     if not logger.handlers:
         formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s ')
         con_handle = logging.StreamHandler()
-        file_handle = logging.FileHandler(name)
+        file_handle = logging.FileHandler(log_name)
 
         file_handle.setFormatter(formatter)
         con_handle.setFormatter(formatter)

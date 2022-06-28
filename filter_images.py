@@ -23,12 +23,14 @@ from itertools import groupby
 if not os.path.exists(IMAGE_SAVE_PATH):
     os.makedirs(IMAGE_SAVE_PATH)
 
-logger = get_logger(__name__)
+logger = get_logger('get_images')
+error_logger = get_logger('get_images_error')
 
 SUBSCRIPT_COMPILE = re.compile(r'([图表]\d{1,3}.*)')
 PAGE_NO_COMPILE = re.compile(r'^(\d*)$')
 REFERENCE_COMPILE = re.compile(r'(\[\d.*][\u4e00-\u9fa5a-zA-Z]+)')
 BLANK_COMPILE = re.compile(r'\s+')
+TITLE_COMPILE = re.compile(r'(第\d+期\s.*?.*?)\.pdf')
 
 Coordinates = Tuple[float, float, float, float]
 
@@ -38,8 +40,9 @@ def after_save(func):
     def inner(*args, **kwargs):
         try:
             return func(*args, **kwargs)
+        except AssertionError:
+            error_logger.error('pdf读取失败： {}'.format(args[0].pdf_path))
         except Exception as e:
-            error_logger = get_logger('error')
             error_logger.error('pdf解析出错： %s', args[0].pdf_path)
             error_logger.error(str(e))
             error_logger.error(traceback.format_exc())
@@ -66,12 +69,23 @@ class TextClassifier(object):
         self.cur_page_img_dict = dict()
         self.cur_page_img_no = 0
 
-    @property
-    def save_path(self):
         path = os.path.join(IMAGE_SAVE_PATH, self.title)
         if not os.path.exists(path):
             os.makedirs(path)
-        return path
+
+        self.save_path = path
+
+    @property
+    def text_pages(self):
+        return self.text_doc.pages
+
+    @property
+    def title_from_path(self):
+        res = TITLE_COMPILE.search(self.pdf_path)
+        if res and res[1]:
+            return res[1]
+
+        return self.pdf_path.split('/')[-1].strip('.pdf')
 
     @property
     def title(self) -> str:
@@ -79,16 +93,20 @@ class TextClassifier(object):
         获取文章标题
         :return:
         """
-        title = ''
-        pages = self.text_doc.pages
+        title = self.title_from_path
+        tmp_title = ''
+        pages = self.text_pages
         if not pages:
             return title
 
-        for c in pages[0].chars:
-            if c['size'] >= Title.size:
-                title += c['text']
-
-        return title
+        try:
+            for c in pages[0].chars:
+                if c['text'].startswith('(cid'):
+                    return '水印-{}'.format(title)
+                if c['size'] >= Title.size:
+                    tmp_title += c['text']
+        finally:
+            return title if title else tmp_title
 
     @staticmethod
     def is_header(y1):
@@ -107,10 +125,8 @@ class TextClassifier(object):
 
         text = re.sub(BLANK_COMPILE, '', text)
         ref_info = REFERENCE_COMPILE.search(text)
-        if ref_info:
-            return True
 
-        return False
+        return True if ref_info else False
 
     @staticmethod
     def iter_successive_text(chars: List[Dict]) -> str:
@@ -135,6 +151,17 @@ class TextClassifier(object):
 
                 i = j
 
+    def crop(self, page_no, cds):
+        page = self.text_pages[page_no]
+        x0, y0, x1, y1 = cds
+
+        x0 = x0 if x0 > 0 else 0
+        y0 = y0 if y0 > 0 else 0
+        x1 = x1 if x1 < page.width else page.width
+        y1 = y1 if y1 < page.height else page.height
+
+        return page.crop([x0, y0, x1, y1])
+
     def get_subscript(self, page_no, coordinates: Coordinates):
         """
         获取图表下标名称
@@ -147,7 +174,7 @@ class TextClassifier(object):
         def get_name_in_box(cds):
             ret = []
 
-            chars = page_obj.crop(cds).chars
+            chars = self.get_text_in_box(page_no, cds)
             for s in self.iter_successive_text(chars):
                 m = SUBSCRIPT_COMPILE.search(s)
                 if not m:
@@ -158,7 +185,7 @@ class TextClassifier(object):
 
             return ret
 
-        page_obj = self.text_doc.pages[page_no]
+        page_obj = self.text_pages[page_no]
         x0, y0, x1, y1 = coordinates
         c1 = (x0 - 5, y0 - SUBSCRIPT_HEIGHT, x1 + 5, y0)
         c2 = (x0 - 5, y1, x1 + 5, y1 + SUBSCRIPT_HEIGHT)
@@ -181,10 +208,18 @@ class TextClassifier(object):
         :param coordinates: 坐标对
         :return:
         """
-        return ''.join([
-            c['text'] for c in
-            self.text_doc.pages[page_no].crop(coordinates).chars
-        ])
+        page = self.text_pages[page_no]
+        x0, y0, x1, y1 = coordinates
+
+        if x0 == x1 or y0 == y1:
+            return ''
+
+        x0 = x0 if x0 > 0 else 0
+        y0 = y0 if y0 > 0 else 0
+        x1 = x1 if x1 < page.width else page.width
+        y1 = y1 if y1 < page.height else page.height
+
+        return page.crop([x0, y0, x1, y1]).chars
 
     def get_area(self, cds):
         return (cds[2] - cds[0]) * (cds[3] - cds[1])
@@ -218,7 +253,7 @@ class TextClassifier(object):
                 self.cur_page_img_dict[pic_name] = c
                 self.cur_page_img_no += 1
             except RuntimeError:
-                logger.error('{} 错误, 保存对象失败！'.format(c))
+                error_logger.error('{}: {} 错误, 保存对象失败！'.format(self.pdf_path, c))
                 continue
 
             logger.info('%s --- 保存成功！' % pic_name)
@@ -256,7 +291,6 @@ class TextClassifier(object):
                 else:
                     ret.append(cds)
                     coordinates = cds
-                # coordinates = self.merge_box(coordinates, cds)
 
             ret.append(coordinates)
 
@@ -264,9 +298,9 @@ class TextClassifier(object):
 
     def subscipt_in_box(self, page_no, box):
         box = list(box)
-        box[0] += 5
+        box[0] -= 5
         box[2] += 5
-        sub_info = self.get_text_in_box(page_no, box)
+        sub_info = ''.join([c['text'] for c in self.get_text_in_box(page_no, box)])
         match_info = SUBSCRIPT_COMPILE.search(sub_info)
         if match_info and match_info[1]:
             return True
@@ -383,7 +417,8 @@ class TextClassifier(object):
             if self.is_footer(text_page.height, c[1]):
                 continue
 
-            text = self.get_text_in_box(text_page.page_number - 1, c)
+            chars = self.get_text_in_box(text_page.page_number - 1, c)
+            text = ''.join([c['text'] for c in chars])
             if self.in_keywords(text):
                 continue
 
@@ -402,7 +437,7 @@ class TextClassifier(object):
 
     @after_save
     def save(self):
-        for text_page in self.text_doc.pages:
+        for text_page in self.text_pages:
             # 用以截图的pdf页对象
             page_no = text_page.page_number - 1
             image_page = self.image_doc.load_page(page_no)
@@ -433,12 +468,19 @@ def test():
     file_name = '第7期 CPS行为建模及其仿真验证.pdf'
     file_name = '第2期 片上系统芯片的软硬件协同设计.pdf'
     file_name = '第1期 机器智能需要神经科学.pdf'
+    file_name = '第12期 CCF@U_CCF走进高校(2017年11月).pdf'
+    file_name = '第12期 2017年目录.pdf'
+    file_name = '第5期 CCF代表团访问法德.pdf'
+    file_name = '第12期 做顶天立地的研究培养独立的学术风格——访“2017CCF王选奖”获得者鲍虎军教授.pdf'
+    file_name = '第1期 提高健康、安全和生活质量的模式识别.pdf'
+    file_name = '第10期 云计算与虚拟化.pdf'
     fpath = ARTICLE_PATH + '/' + file_name
     obj = TextClassifier(fpath)
     obj.save()
 
 
 def run():
+    res = dict()
     for file_name in os.listdir(ARTICLE_PATH):
         if not file_name.endswith('.pdf'):
             continue
@@ -451,5 +493,3 @@ def run():
 if __name__ == '__main__':
     # test()
     run()
-    # print(os.listdir(ARTICLE_PATH).index('第12期 从网络主权角度谈自主根域名体系.pdf'))
-    # print(os.listdir(ARTICLE_PATH)[1120])

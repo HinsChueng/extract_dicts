@@ -1,3 +1,5 @@
+# 日志位置
+LOG_PATH = './logs'
 ARTICLE_PATH = '/Users/joeyon/Desktop/期刊/原文/第二期'
 RESULT_PATH = 'files/results'
 
@@ -17,4 +19,3 @@ EXCLUDED_NAMES = ['参考文献', 'CCF', '特邀专栏作家']
 TABLE_GAP = 50
 # 提取出的图表存放位置
 IMAGE_SAVE_PATH = 'files/images/{}'.format(ARTICLE_PATH.split('/')[-1])
-
